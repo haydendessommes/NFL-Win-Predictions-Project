@@ -1,0 +1,119 @@
+library(pivottabler)
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+weatherrun=winners %>% group_by(finweather) %>% summarize(avg=mean(run))
+
+
+## Import Data
+Weather <- read.csv('https://raw.githubusercontent.com/ThompsonJamesBliss/WeatherData/master/data/games_weather.csv')
+PBP <- read.csv("D:\\playbyplay\\NFL Play by Play 2009-2018 (v5).csv")
+WLInitial <- read.csv('https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv')
+test <- PBP %>% filter(game_id == 2009091000)
+
+count(test, play_type == "pass" )
+
+PBPGG<- PBP %>% group_by(game_id,posteam) %>% count(play_type)
+
+WLTEST<-WLInitial%>%mutate(Winner = case_when( (result > 0) ~ home_team, (result<0) ~ away_team))
+
+WLFIN <- WLTEST %>% select(game_id, Winner, season, game_type, gameday,old_game_id,home_score,away_score)
+
+
+
+combo <- WLFIN %>% inner_join(PBPGG, by = c("old_game_id" = "game_id"))
+
+comboSpread <- combo %>% spread(play_type, n) %>% filter(!is.na(posteam))%>% filter(posteam != "")%>% mutate(result = case_when((posteam==Winner)~"Won", posteam != Winner~"Lost")) 
+
+combospreadsc <-comboSpread %>% mutate(pointsScored = case_when(home_score>away_score & result == "Won" ~ home_score, 
+home_score<away_score & result == "Won" ~ away_score,
+home_score>away_score & result == "Lost" ~ away_score,
+home_score<away_score & result == "Lost" ~ home_score, 
+home_score==away_score ~ home_score))
+combospreadsc$totalPlays <- combospreadsc$pass+combospreadsc$run + combospreadsc$punt 
+combospreadsc$percent_run <- (combospreadsc$run / combospreadsc$totalPlays) * 100
+combospreadsc$percent_pass <- (combospreadsc$pass / combospreadsc$totalPlays) * 100
+combospreadsc$WL <-  case_when(combospreadsc$result == "Won" ~ 1, combospreadsc$result == "Lost" ~ 0, combospreadsc$result == "Tie" ~ 0)
+
+
+Weather2 <- Weather %>% mutate(weatherType = case_when(EstimatedCondition == "Clear" ~ 1, 
+EstimatedCondition == "Heavy Rain" ~ 2,
+EstimatedCondition == "Moderate Rain" ~ 3,
+EstimatedCondition == "Light Rain" ~ 4, 
+EstimatedCondition == "Light Snow" ~ 6,
+EstimatedCondition == "Moderate Snow" ~ 7))
+Weather2[is.na(Weather2)] = 0
+
+#winners
+winners=subset(FinFinal, WL==1)
+#weather visualizations
+weatherpass=winners %>% group_by(finweather) %>% summarize(avg=mean(pass))
+
+weatherrun=winners %>% group_by(finweather) %>% summarize(avg=mean(run))
+
+plot(weatherpass, main="Avg Passing plays for winner in each weather condition")
+
+plot(weatherrun, main="Avg Rushing plays for winner in each weather condition")
+
+
+finConditiontest <- Weather2
+
+finfinal <- finConditiontest %>% group_by(game_id) %>% mutate(finweather = max(weatherType))
+finOne <- finfinal %>% distinct(game_id, .keep_all= "True")
+finOne$EstimatedCondition <- case_when(finOne$finweather == 1 ~ "Clear", 
+                            finOne$finweather == 0 ~ "No Data",
+                             finOne$finweather == 2 ~ "Heavy Rain",
+                             finOne$finweather == 3 ~ "Moderate Rain",
+                             finOne$finweather == 4 ~ "Light Rain",
+                             finOne$finweather == 6 ~ "Light Snow",
+                             finOne$finweather == 7 ~ "Moderate Snow")
+
+
+Weather3 <- finOne %>%
+  select(game_id, finweather, EstimatedCondition)
+Weather3 <-rename(Weather3, old_game_id = game_id)
+Weather3 <- Weather3 %>% filter(old_game_id >= 2009091000 & old_game_id <= 2018121700)
+
+
+
+FinTable <- merge(combospreadsc, Weather3, , all ='True')
+
+FinTable$gameday <- as.Date(FinTable$gameday, format = '%y')
+
+
+ggplot(FinTablePit, aes(x = season, color = WL))+
+geom_bar(aes(y = percent_run))+
+geom_bar(aes(y= percent_pass))
+
+
+FinFinal <- FinTable %>% select(run, pass, finweather,  WL, game_id,)
+
+validation_index <- createDataPartition(FinFinal$game_id, p= .8, list = FALSE)
+validation <- FinFinal[-validation_index,]
+FinFinal <- FinFinal[validation_index,]
+
+dim(FinFinal)
+sapply(FinFinal, class)
+percentage <- prop.table(table(FinFinal$WL)) *100
+cbind(freq=table(FinFinal$WL), percentage = percentage)
+
+levels(FinFinal$WL)
+
+mean(FinFinal$percent_run & FinFinal$WL==1)
+summary(FinFinal)
+
+set.seed(321) 
+FinTable[is.na(FinTable)] = 0
+index <- sample(1:nrow(FinTable), round(nrow(FinTable) * 0.7))
+train <- (FinTable[index, ])
+test <- (FinTable[-index, ])
+
+library(caret)
+library(e1071)
+
+
+
+model <- train(WL ~ no_play+pass+punt+qb_kneel+qb_spike+run+percent_pass+percent_run+EstimatedCondition,
+data = train, method = "glm")
+summary(model)
